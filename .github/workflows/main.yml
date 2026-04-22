@@ -5,12 +5,12 @@ on:
     branches:
       - main
     paths:
-      - "src/main/resources/release.json" # 只有修改这个文件时才触发，防止频繁构建
+      - "src/main/resources/release.json" # 仅当版本配置文件修改时触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 必须添加权限配置，否则无法创建 Release
+    # 授予创建 Release 必须的写入权限
     permissions:
       contents: write
 
@@ -23,9 +23,9 @@ jobs:
         with:
           java-version: '8'
           distribution: 'temurin'
-          cache: 'maven'
+          cache: 'maven' # 自动处理 Maven 依赖缓存，无需额外的 actions/cache
 
-      # 从 release.json 读取版本号 (tag_main)
+      # 1. 读取 release.json 中的内部版本号 (用于定位生成的 jar)
       - name: Read tag_main
         id: tag_main
         uses: ashley-taylor/read-json-property-action@v1.2
@@ -33,7 +33,7 @@ jobs:
           path: ./src/main/resources/release.json
           property: tag_main
 
-      # 从 release.json 读取展示版本号 (tag_latest)
+      # 2. 读取 release.json 中的展示版本号 (用于 Release 标签)
       - name: Read tag_latest
         id: tag_latest
         uses: ashley-taylor/read-json-property-action@v1.2
@@ -41,31 +41,42 @@ jobs:
           path: ./src/main/resources/release.json
           property: tag_latest
 
-      # 读取 release.info 作为 Release 说明内容
+      # 3. 读取更新日志
       - name: Read description
         id: description
         uses: juliangruber/read-file-action@v1
         with:
           path: ./src/main/resources/release.info
 
+      # 4. 执行 Maven 打包
       - name: Build with Maven
         run: mvn -B package --file pom.xml -Dmaven.test.skip=true
 
+      # 5. 准备发布压缩包
       - name: Prepare Release Package (ZIP)
         run: |
-          # 1. 规范化命名
-          mv ./target/bilibili-${{ steps.tag_main.outputs.value }}.jar bilibili-v${{ steps.tag_latest.outputs.value }}.jar
+          echo "正在检查生成的 JAR 文件..."
+          ls -l ./target/
           
-          # 2. 打包 ZIP，包含 jar、配置说明和文档
-          zip -r "bilibili-v${{ steps.tag_latest.outputs.value }}.zip" \
-                 "bilibili-v${{ steps.tag_latest.outputs.value }}.jar" \
-                 "README.md" \
-                 "LICENSE"
+          # 定义文件名变量，方便复用
+          JAR_NAME="bilibili-${{ steps.tag_main.outputs.value }}.jar"
+          NEW_NAME="bilibili-v${{ steps.tag_latest.outputs.value }}.jar"
+          ZIP_NAME="bilibili-v${{ steps.tag_latest.outputs.value }}.zip"
           
-          # 如果你有额外的 config.json 或 docs 目录，取消下面行的注释
-          # cp ./src/main/resources/config.json ./
-          # zip "bilibili-v${{ steps.tag_latest.outputs.value }}.zip" config.json -r docs/
+          # 移动并重命名 JAR
+          mv "./target/$JAR_NAME" "./$NEW_NAME"
+          
+          # 打包文件 (包含 JAR, README, LICENSE)
+          # 注意：如果你的根目录下没有 LICENSE 文件，请删除下面对应的行，否则 zip 会报错
+          zip "$ZIP_NAME" "$NEW_NAME" "README.md"
+          
+          # 如果有 LICENSE 文件则添加
+          if [ -f "LICENSE" ]; then zip "$ZIP_NAME" "LICENSE"; fi
+          
+          # 如果有 config.json 需要打包，取消下行注释
+          # if [ -f "src/main/resources/config.json" ]; then cp src/main/resources/config.json ./ && zip "$ZIP_NAME" config.json; fi
 
+      # 6. 发布到 GitHub Release
       - name: Create and Upload Release
         uses: softprops/action-gh-release@v2
         with:
@@ -74,6 +85,7 @@ jobs:
           body: ${{ steps.description.outputs.content }}
           draft: false
           prerelease: false
+          # 指定要上传的文件
           files: |
             bilibili-v${{ steps.tag_latest.outputs.value }}.zip
         env:
